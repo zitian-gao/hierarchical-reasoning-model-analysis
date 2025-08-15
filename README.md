@@ -1,5 +1,5 @@
 # Hierarchical Reasoning Model Analysis
-This repository contains the code used to analyse the methods proposed in the [HRM paper](https://arxiv.org/abs/2506.21734). This repository is based on the [official HRM repo](https://github.com/sapientinc/HRM), and only adds bits and pieces to run the experiments we performed to (i) replicate the author's results and (ii) understand what drives the performance on ARC-AGI. We document our findings in our [blog post](TODO). 
+This repository contains the code used to analyse the methods proposed in the [HRM paper](https://arxiv.org/abs/2506.21734). This repository is based on the [official HRM repo](https://github.com/sapientinc/HRM), and only adds bits and pieces to run the experiments we performed to (i) replicate the author's results and (ii) understand what drives the performance on ARC-AGI. We document our findings in our [blog post](http://arcprize.org/blog/hrm-analysis). 
 
 ## Setup
 We have been in close contact with the authors to replicate their experiments. Below is the recipe to create an environment that replicates their results. We have run these on two nodes with 8 H100 GPUs each. We assume CUDA 12.8 is installed.
