@@ -58,6 +58,8 @@ class HierarchicalReasoningModel_ACTV2Config(BaseModel):
     expansion: float
     num_heads: int
     pos_encodings: str
+    attention_dropout: float = 0.0
+    mlp_dropout: float = 0.0
 
     rms_norm_eps: float = 1e-5
     rope_theta: float = 10000.0
@@ -86,17 +88,29 @@ class HierarchicalReasoningModel_ACTV2Block(nn.Module):
             hidden_size=config.hidden_size,
             expansion=config.expansion,
         )
+        self.attention_dropout = (
+            nn.Dropout(config.attention_dropout)
+            if config.attention_dropout > 0
+            else nn.Identity()
+        )
+        self.mlp_dropout = (
+            nn.Dropout(config.mlp_dropout) if config.mlp_dropout > 0 else nn.Identity()
+        )
         self.norm_eps = config.rms_norm_eps
 
     def forward(self, cos_sin: CosSin, hidden_states: torch.Tensor) -> torch.Tensor:
         # Post Norm
         # Self Attention
+        attn_output = self.attention_dropout(
+            self.self_attn(cos_sin=cos_sin, hidden_states=hidden_states)
+        )
         hidden_states = rms_norm(
-            hidden_states + self.self_attn(cos_sin=cos_sin, hidden_states=hidden_states),
+            hidden_states + attn_output,
             variance_epsilon=self.norm_eps,
         )
         # Fully Connected
-        hidden_states = rms_norm(hidden_states + self.mlp(hidden_states), variance_epsilon=self.norm_eps)
+        mlp_output = self.mlp_dropout(self.mlp(hidden_states))
+        hidden_states = rms_norm(hidden_states + mlp_output, variance_epsilon=self.norm_eps)
         return hidden_states
 
 
