@@ -9,9 +9,12 @@ halt_max_steps: 16
 H_cycles: 1  # kept for compatibility
 H_layers: 8 
 
-hidden_size: 512  
+hidden_size: 512
 num_heads: 12
 expansion: 4
+
+attention_dropout: 0.0
+mlp_dropout: 0.0
 
 puzzle_emb_ndim: ${.hidden_size}
 
