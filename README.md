@@ -93,8 +93,24 @@ torchrun \
   --nproc_per_node $GPUS_PER_NODE \
   --rdzv_backend c10d \
   --rdzv_endpoint $MASTER_ADDR:$MASTER_PORT \
-  pretrain.py  
+  pretrain.py
 ```
+
+### Resume training from checkpoints
+
+Training automatically saves checkpoints to `checkpoints/<project>/<run_name>/step_<N>.pt`. Each checkpoint contains the model
+weights, optimizer states, and RNG state so you can resume without losing learning-rate scheduling progress. To resume, point
+`load_checkpoint` at a specific file or set it to `latest` to load the most recent checkpoint in `checkpoint_path`:
+
+```bash
+# Resume from a specific checkpoint file
+torchrun --nproc-per-node 8 pretrain.py load_checkpoint=checkpoints/your_model/step_010000.pt
+
+# Resume using the latest checkpoint saved under the configured checkpoint_path
+torchrun --nproc-per-node 8 pretrain.py load_checkpoint=latest
+```
+
+When resuming, keep the same `checkpoint_path` so subsequent checkpoints continue the numbering sequence.
 
 
 ### Change architecture to transformer
@@ -139,7 +155,7 @@ After training, evaluate the same model with different numbers of inference step
 # save as eval_inference_steps.py
 from evaluate_trained_model import evaluate_checkpoint
 
-checkpoint = 'checkpoints/your_model/step_XXXXX'  # Update with your checkpoint
+checkpoint = 'checkpoints/your_model/step_XXXXX.pt'  # Update with your checkpoint
 data_path = 'data/arc-aug-1000'  # Your test dataset
 
 # Test different max steps
@@ -181,7 +197,7 @@ After training a model, vary how many augmentations are used at inference time. 
 ```bash
 # Evaluate the same trained model with varying augmentation counts
 python run_augmentation_ablation_eval.py \
-  --checkpoint checkpoints/your_model/step_XXXXX \
+  --checkpoint checkpoints/your_model/step_XXXXX.pt \
   --data-path data/arc-aug-1000 \
   --augmentation-counts 1,2,3,5,10,20,40,60,100,200,400,600 \
   --output-dir augmentation_eval_results \
@@ -190,7 +206,7 @@ python run_augmentation_ablation_eval.py \
 
 # For multi-GPU evaluation (recommended):
 torchrun --nproc-per-node 8 run_augmentation_ablation_eval.py \
-  --checkpoint checkpoints/your_model/step_XXXXX \
+  --checkpoint checkpoints/your_model/step_XXXXX.pt \
   --data-path data/arc-aug-1000 \
   --augmentation-counts 1,2,3,5,10,20,40,60,100,200,400,600 \
   --output-dir augmentation_eval_results
