@@ -7,13 +7,13 @@ Supports both single and multi-GPU evaluation.
 Usage:
     # Single GPU
     python evaluate_trained_model.py \
-        --checkpoint-path checkpoints/arc-aug-600/run_name/checkpoint.pt \
+        --checkpoint-path checkpoints/arc-aug-600/run_name/step_XXXXX.pt \
         --data-path data/arc-aug-1000-test \
         --output-dir eval_results/run_name_1000aug
-    
+
     # Multi-GPU
     torchrun --nproc-per-node 8 evaluate_trained_model.py \
-        --checkpoint-path checkpoints/arc-aug-600/run_name/checkpoint.pt \
+        --checkpoint-path checkpoints/arc-aug-600/run_name/step_XXXXX.pt \
         --data-path data/arc-aug-1000-test \
         --output-dir eval_results/run_name_1000aug
 """
@@ -34,11 +34,10 @@ from omegaconf import DictConfig, OmegaConf
 
 from pretrain import (
     PretrainConfig,
-    create_dataloader, 
+    create_dataloader,
     create_model,
     create_evaluators,
     evaluate,
-    load_checkpoint,
     TrainState
 )
 from utils.functions import load_model_class
@@ -207,23 +206,25 @@ def evaluate_checkpoint(
     # Load checkpoint weights
     if rank == 0:
         print(f"Loading checkpoint weights from: {checkpoint_path}")
-        
+
         # Load the checkpoint
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
         # Handle different checkpoint formats
-        if 'model' in checkpoint:
-            state_dict = checkpoint['model']
-        elif 'state_dict' in checkpoint:
-            state_dict = checkpoint['state_dict']
+        if "model" in checkpoint:
+            state_dict = checkpoint["model"]
+        elif "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+        elif "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
         else:
             state_dict = checkpoint
-        
+
         # Load state dict
         model.load_state_dict(state_dict, strict=True)
-        
+
         # Get step number if available
-        step = checkpoint.get('step', 0)
+        step = checkpoint.get("step", 0)
     else:
         step = 0
     

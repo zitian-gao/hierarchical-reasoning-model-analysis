@@ -1,9 +1,10 @@
-from typing import Optional, Any, Sequence, List
+from typing import Optional, Any, Sequence, List, Tuple
 from dataclasses import dataclass
 import os
 import math
 import yaml
 import shutil
+import re
 
 import torch
 import torch.distributed as dist
@@ -126,10 +127,6 @@ def create_model(config: PretrainConfig, train_metadata: PuzzleDatasetMetadata, 
         if "DISABLE_COMPILE" not in os.environ:
             model = torch.compile(model, dynamic=False)  # type: ignore
 
-        # Load checkpoint
-        if rank == 0:
-            load_checkpoint(model, config)
-
         # Broadcast parameters from rank 0
         if world_size > 1:
             with torch.no_grad():
@@ -189,7 +186,7 @@ def init_train_state(
     # Model
     model, optimizers, optimizer_lrs = create_model(config, train_metadata, rank=rank, world_size=world_size)
 
-    return TrainState(
+    train_state = TrainState(
         step=0,
         total_steps=total_steps,
         model=model,
@@ -198,41 +195,127 @@ def init_train_state(
         carry=None,
     )
 
+    load_checkpoint(train_state, config, rank)
+
+    return train_state
+
 
 def save_train_state(config: PretrainConfig, train_state: TrainState):
-    # FIXME: Only saved model.
     if config.checkpoint_path is None:
         return
 
     os.makedirs(config.checkpoint_path, exist_ok=True)
-    torch.save(
-        train_state.model.state_dict(), os.path.join(config.checkpoint_path, f"step_{train_state.step}")
-    )
+    state = {
+        "step": train_state.step,
+        "model_state_dict": train_state.model.state_dict(),
+        "optimizer_states": [optim.state_dict() for optim in train_state.optimizers],
+    }
+
+    state["rng_state"] = torch.random.get_rng_state()
+    if torch.cuda.is_available():
+        try:
+            state["cuda_rng_state"] = torch.cuda.get_rng_state_all()
+        except RuntimeError:
+            state["cuda_rng_state"] = torch.cuda.get_rng_state()
+
+    torch.save(state, os.path.join(config.checkpoint_path, f"step_{train_state.step}.pt"))
 
 
-def load_checkpoint(model: nn.Module, config: PretrainConfig):
-    if config.load_checkpoint is not None:
-        print(f"Loading checkpoint {config.load_checkpoint}")
+def _resolve_checkpoint_path(path: str) -> Optional[str]:
+    if os.path.isfile(path):
+        return path
 
-        # Load state dict
-        state_dict = torch.load(config.load_checkpoint, map_location="cuda")
+    if os.path.isdir(path):
+        pattern = re.compile(r"step_(\\d+)(?:\\.pt)?$")
+        candidates: List[Tuple[int, str]] = []
+        for file_name in os.listdir(path):
+            match = pattern.match(file_name)
+            if match:
+                candidates.append((int(match.group(1)), os.path.join(path, file_name)))
 
-        # Resize and reset puzzle emb if needed
-        puzzle_emb_name = "_orig_mod.model.inner.puzzle_emb.weights"
-        expected_shape: torch.Size = model.model.puzzle_emb.weights.shape  # type: ignore
-        if puzzle_emb_name in state_dict:
-            puzzle_emb = state_dict[puzzle_emb_name]
-            if puzzle_emb.shape != expected_shape:
-                print(
-                    f"Resetting puzzle embedding as shape is different. Found {puzzle_emb.shape}, Expected {expected_shape}"
-                )
+        if candidates:
+            candidates.sort(key=lambda x: x[0])
+            return candidates[-1][1]
 
-                # Re-initialize using mean
-                state_dict[puzzle_emb_name] = (
-                    torch.mean(puzzle_emb, dim=0, keepdim=True).expand(expected_shape).contiguous()
-                )
+    return None
 
-        model.load_state_dict(state_dict, assign=True)
+
+def _resize_puzzle_embedding_if_needed(model: nn.Module, state_dict: dict):
+    puzzle_emb_name = "_orig_mod.model.inner.puzzle_emb.weights"
+    expected_shape: torch.Size = model.model.puzzle_emb.weights.shape  # type: ignore
+    if puzzle_emb_name in state_dict:
+        puzzle_emb = state_dict[puzzle_emb_name]
+        if puzzle_emb.shape != expected_shape:
+            print(
+                f"Resetting puzzle embedding as shape is different. Found {puzzle_emb.shape}, Expected {expected_shape}"
+            )
+
+            # Re-initialize using mean
+            state_dict[puzzle_emb_name] = (
+                torch.mean(puzzle_emb, dim=0, keepdim=True).expand(expected_shape).contiguous()
+            )
+
+
+def load_checkpoint(train_state: TrainState, config: PretrainConfig, rank: int):
+    load_path = config.load_checkpoint
+    if load_path is None:
+        return
+
+    if load_path == "latest":
+        if config.checkpoint_path is None:
+            raise ValueError("Cannot load latest checkpoint without a checkpoint_path configured.")
+        load_path = config.checkpoint_path
+
+    resolved_path = _resolve_checkpoint_path(load_path)
+    if resolved_path is None:
+        raise FileNotFoundError(f"Could not resolve checkpoint path from '{load_path}'")
+
+    if rank == 0:
+        print(f"Loading checkpoint {resolved_path}")
+
+    checkpoint = torch.load(resolved_path, map_location="cuda")
+
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
+        optimizer_states = checkpoint.get("optimizer_states")
+        step = checkpoint.get("step")
+        rng_state = checkpoint.get("rng_state")
+        cuda_rng_state = checkpoint.get("cuda_rng_state")
+    else:
+        # Backwards compatibility with checkpoints that only contain model weights
+        state_dict = checkpoint
+        optimizer_states = None
+        step = None
+        rng_state = None
+        cuda_rng_state = None
+
+    _resize_puzzle_embedding_if_needed(train_state.model, state_dict)
+    train_state.model.load_state_dict(state_dict, assign=True)
+
+    if optimizer_states is not None:
+        if len(optimizer_states) != len(train_state.optimizers):
+            raise ValueError(
+                "Checkpoint optimizer count does not match current configuration: "
+                f"{len(optimizer_states)} vs {len(train_state.optimizers)}"
+            )
+
+        for optimizer, optimizer_state in zip(train_state.optimizers, optimizer_states):
+            optimizer.load_state_dict(optimizer_state)
+
+    if step is not None:
+        train_state.step = int(step)
+
+    # Reset carry since we do not serialize it
+    train_state.carry = None
+
+    if rng_state is not None:
+        torch.random.set_rng_state(rng_state)
+
+    if cuda_rng_state is not None and torch.cuda.is_available():
+        try:
+            torch.cuda.set_rng_state_all(cuda_rng_state)
+        except RuntimeError:
+            torch.cuda.set_rng_state(cuda_rng_state)
 
 
 def compute_lr(base_lr: float, config: PretrainConfig, train_state: TrainState):
@@ -585,6 +668,8 @@ def launch(hydra_config: DictConfig):
     progress_bar = None
     if RANK == 0:
         progress_bar = tqdm.tqdm(total=train_state.total_steps)
+        if train_state.step > 0:
+            progress_bar.update(train_state.step)
 
         wandb.init(
             project=config.project_name,
