@@ -135,6 +135,8 @@ def evaluate_checkpoint(
     config.data_path = data_path
     
     if config_overrides:
+        from pretrain import EvaluatorConfig  # Local import to avoid circular during type checking
+
         for key, value in config_overrides.items():
             if key == "arch" and isinstance(value, dict):
                 # Handle nested arch config updates (e.g., halt_max_steps)
@@ -143,6 +145,11 @@ def evaluate_checkpoint(
                         config.arch.__pydantic_extra__[arch_key] = arch_value
                     else:
                         setattr(config.arch, arch_key, arch_value)
+            elif key == "evaluators" and isinstance(value, list):
+                # Convert evaluator override dicts back into EvaluatorConfig objects
+                config.evaluators = [
+                    cfg if isinstance(cfg, EvaluatorConfig) else EvaluatorConfig(**cfg) for cfg in value
+                ]
             else:
                 setattr(config, key, value)
     
@@ -210,21 +217,33 @@ def evaluate_checkpoint(
         # Load the checkpoint
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
-        # Handle different checkpoint formats
-        if "model" in checkpoint:
-            state_dict = checkpoint["model"]
-        elif "state_dict" in checkpoint:
-            state_dict = checkpoint["state_dict"]
-        elif "model_state_dict" in checkpoint:
-            state_dict = checkpoint["model_state_dict"]
+        # Handle different checkpoint formats (align with pretrain.py saving logic)
+        if isinstance(checkpoint, dict):
+            step = checkpoint.get("step", 0)
+
+            if "model" in checkpoint:
+                state_dict = checkpoint["model"]
+            elif "state_dict" in checkpoint:
+                state_dict = checkpoint["state_dict"]
+            elif "model_state_dict" in checkpoint:
+                state_dict = checkpoint["model_state_dict"]
+            else:
+                state_dict = checkpoint
+
+            # Some checkpoints may still include training metadata instead of the raw model dict
+            if "model_state_dict" in state_dict:
+                state_dict = state_dict["model_state_dict"]
         else:
             state_dict = checkpoint
+            step = 0
+
+        # Resize puzzle embedding if needed (handles vocab size changes)
+        from pretrain import _resize_puzzle_embedding_if_needed  # Local import to avoid circular
+
+        _resize_puzzle_embedding_if_needed(model, state_dict)
 
         # Load state dict
         model.load_state_dict(state_dict, strict=True)
-
-        # Get step number if available
-        step = checkpoint.get("step", 0)
     else:
         step = 0
     
